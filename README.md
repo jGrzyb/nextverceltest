@@ -57,7 +57,7 @@ Copy `.env.example` to `.env.local` and fill in:
 
 | Route | File | Description |
 | ----- | ---- | ----------- |
-| `/` | `src/app/page.tsx` | Home page with shadcn/ui components and a serverless function tester |
+| `/` | `src/app/page.tsx` | Book finder UI — search form with three location sources (address geocoding, manual coordinates, browser geolocation), availability filter and sorting |
 | `/about` | `src/app/about/page.tsx` | About the project, the stack, and deploying to Vercel |
 
 ## Library code structure

@@ -8,9 +8,9 @@
  */
 
 import { getCatalog, LibraryCatalog } from "./catalog";
-import type { Book, RawBook } from "./catalog";
 import { Coordinates, DistanceCalculator } from "./coordinates";
 import { geocodeAddress } from "./geocode";
+import type { Book, RawBook } from "./types";
 
 export { LibraryCatalog, getCatalog, geocodeAddress };
 export { Coordinates, DistanceCalculator };

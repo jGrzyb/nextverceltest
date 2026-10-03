@@ -4,19 +4,9 @@ import { load } from "cheerio";
 import { config } from "./config";
 import { Coordinates, DistanceCalculator } from "./coordinates";
 import { fetchWithRetry } from "./http";
+import type { Book, RawBook } from "./types";
 
-/** A book as scraped from the catalog, before distance is computed. */
-export interface RawBook {
-  title: string;
-  author: string;
-  branch_number: number;
-  available: boolean;
-}
-
-/** A book with the distance from the user's location appended. */
-export interface Book extends RawBook {
-  distance_km: number;
-}
+export type { Book, RawBook };
 
 /** Thrown when the catalog site cannot be reached or responds with an error. */
 export class CatalogHttpError extends Error {
