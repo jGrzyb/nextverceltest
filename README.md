@@ -25,7 +25,9 @@ Each book in the response:
   "author": "Herbert, Frank (1920-1986). ...",
   "branch_number": 48,
   "available": false,
-  "distance_km": 4.21
+  "distance_km": 4.21,
+  "branch_lat": 50.0549,
+  "branch_lon": 19.9095
 }
 ```
 
@@ -48,6 +50,7 @@ Copy `.env.example` to `.env.local` and fill in:
 | `LIBRARY_CSV` | No | Path to the branch-coordinates CSV (default: `library_coordinates.csv`) |
 | `CATALOG_BASE_URL` | No | Kraków library catalog base URL |
 | `LOCATIONIQ_BASE_URL` | No | LocationIQ search endpoint |
+| `LIBRARY_DEMO` | No | `auto` (default): fall back to built-in demo data when the catalog or geocoder fails / no key is set; `1`: always demo; `0`: never |
 
 ### Data file
 
@@ -57,8 +60,8 @@ Copy `.env.example` to `.env.local` and fill in:
 
 | Route | File | Description |
 | ----- | ---- | ----------- |
-| `/` | `src/app/page.tsx` | Book finder UI — search form with three location sources (address geocoding, manual coordinates, browser geolocation), availability filter and sorting |
-| `/about` | `src/app/about/page.tsx` | About the project, the stack, and deploying to Vercel |
+| `/` | `src/app/page.tsx` | Book finder UI (Polish) — quick place presets that work without geocoding, address / device location / coordinates, results grouped by title with the closest available copy highlighted, Google Maps directions, recent searches, light/dark theme |
+| `/about` | `src/app/about/page.tsx` | How it works and the stack |
 
 ## Library code structure
 
@@ -74,6 +77,8 @@ src/lib/library/
 ```
 
 ## Getting Started
+
+The app works out of the box without any keys: when the live catalog is unreachable or `LOCATIONIQ_API_KEY` is missing, it switches to demo data (the UI shows a "Tryb demo" notice). Demo queries that return results: Diuna, Wiedźmin, Sapkowski, Lalka, Hobbit, Tokarczuk, Lem, Orwell…
 
 ```bash
 npm install

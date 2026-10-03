@@ -9,4 +9,7 @@ export interface RawBook {
 /** A book with the distance from the user's location appended. */
 export interface Book extends RawBook {
   distance_km: number;
+  /** Branch coordinates (null when the branch is missing from the CSV). */
+  branch_lat: number | null;
+  branch_lon: number | null;
 }

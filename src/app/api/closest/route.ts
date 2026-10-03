@@ -11,7 +11,7 @@ export const runtime = "nodejs";
 /**
  * GET /api/closest?q=<query>&lat=<lat>&lon=<lon>
  * The single closest available book.
- * Response: {"result": {...} | null}
+ * Response: {"result": {...} | null, "demo": <bool>}
  */
 export async function GET(request: Request): Promise<Response> {
   const parsed = parseBookSearchParams(request);
@@ -20,12 +20,12 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   try {
-    const result = await findClosest(
+    const { data: result, demo } = await findClosest(
       parsed.params.query,
       parsed.params.lat,
       parsed.params.lon
     );
-    return NextResponse.json({ result });
+    return NextResponse.json({ result, demo });
   } catch (error) {
     return libraryErrorResponse(error);
   }

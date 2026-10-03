@@ -1,4 +1,6 @@
+import type { Metadata } from "next";
 import Link from "next/link";
+import { ArrowLeft, Cloud, Layers, MapPinned, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import {
@@ -9,84 +11,101 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
+export const metadata: Metadata = {
+  title: "O projekcie — Książki w Krakowie",
+};
+
+const STEPS = [
+  {
+    icon: Search,
+    title: "Szukasz",
+    text: "Wpisujesz tytuł lub autora. Serwer pyta katalog Biblioteki Kraków o wszystkie egzemplarze.",
+  },
+  {
+    icon: MapPinned,
+    title: "Liczymy odległość",
+    text: "Dla każdej filii liczymy odległość w linii prostej od wybranego miejsca lub Twojej lokalizacji.",
+  },
+  {
+    icon: Layers,
+    title: "Porządkujemy",
+    text: "Grupujemy egzemplarze według tytułu i na górze pokazujemy najbliższy, który jest na półce.",
+  },
+];
+
 export default function AboutPage() {
   return (
-    <div className="mx-auto w-full max-w-5xl px-6 py-16">
+    <div className="mx-auto w-full max-w-3xl px-4 py-12 sm:px-6 sm:py-16">
       <div className="flex flex-col items-start gap-4">
-        <Badge variant="secondary">About</Badge>
-        <h1 className="text-4xl font-bold tracking-tight">
-          About this project
+        <Badge variant="secondary">O projekcie</Badge>
+        <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
+          Jak to działa
         </h1>
         <p className="max-w-2xl text-lg text-muted-foreground">
-          nextverceltest is a sandbox for verifying how a modern Next.js app
-          behaves when hosted on Vercel.
+          Wyszukiwarka sprawdza dostępność książek w filiach Biblioteki Kraków
+          i podpowiada, dokąd masz najbliżej.
         </p>
       </div>
 
-      <div className="mt-12 grid gap-6">
+      <ol className="mt-10 grid gap-4 sm:grid-cols-3">
+        {STEPS.map((step, index) => (
+          <li key={step.title}>
+            <Card className="h-full">
+              <CardHeader>
+                <span className="mb-2 flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <step.icon className="size-4" />
+                </span>
+                <CardTitle>
+                  {index + 1}. {step.title}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="text-muted-foreground">
+                {step.text}
+              </CardContent>
+            </Card>
+          </li>
+        ))}
+      </ol>
+
+      <div className="mt-6 grid gap-4 sm:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>The stack</CardTitle>
-            <CardDescription>What this project is built with</CardDescription>
+            <CardTitle>Technologia</CardTitle>
+            <CardDescription>Z czego jest zbudowany projekt</CardDescription>
           </CardHeader>
           <CardContent>
             <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
-              <li>Next.js 16 — App Router, React Server Components</li>
-              <li>React 19</li>
-              <li>Tailwind CSS v4 (via @tailwindcss/postcss)</li>
-              <li>shadcn/ui (base-nova style, Base UI primitives, Lucide icons)</li>
+              <li>Next.js 16 (App Router) i React 19</li>
+              <li>Tailwind CSS v4 i shadcn/ui (Base UI, ikony Lucide)</li>
               <li>TypeScript</li>
+              <li>Geokodowanie adresów przez LocationIQ</li>
             </ul>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>Serverless on Vercel</CardTitle>
-            <CardDescription>How the backend works</CardDescription>
+            <CardTitle className="flex items-center gap-2">
+              <Cloud className="size-4 text-primary" />
+              Serverless na Vercelu
+            </CardTitle>
+            <CardDescription>Jak działa backend</CardDescription>
           </CardHeader>
-          <CardContent>
-            <p className="text-muted-foreground">
-              Files named <code>route.ts</code> inside the App Router become
-              Route Handlers. On Vercel each one is deployed as an isolated
-              serverless function — no server to manage, scaling to zero when
-              idle and spinning up automatically on request. This project
-              exposes the library finder at <code>/api/books</code>,{" "}
-              <code>/api/available</code>, <code>/api/closest</code>,{" "}
-              <code>/api/geocode</code> and <code>/api/health</code>.
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Deploying</CardTitle>
-            <CardDescription>Push to Git, deploy on Vercel</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-              <li>Push this repository to GitHub, GitLab, or Bitbucket.</li>
-              <li>
-                Import it in the Vercel dashboard (vercel.com/new) — Next.js is
-                auto-detected, zero configuration required.
-              </li>
-              <li>
-                Every git push to the main branch produces a production
-                deployment; other branches get preview deployments.
-              </li>
-              <li>
-                Pages (<code>/</code>, <code>/about</code>) are prerendered at
-                build time and served from the edge; <code>/api/hello</code>
-                runs as a serverless function.
-              </li>
-            </ol>
+          <CardContent className="text-muted-foreground">
+            Każdy plik <code className="font-mono text-foreground">route.ts</code>{" "}
+            to osobna funkcja serverless. API wyszukiwarki:{" "}
+            <code className="font-mono text-foreground">/api/books</code>,{" "}
+            <code className="font-mono text-foreground">/api/available</code>,{" "}
+            <code className="font-mono text-foreground">/api/closest</code>,{" "}
+            <code className="font-mono text-foreground">/api/geocode</code>.
           </CardContent>
         </Card>
       </div>
 
       <div className="mt-10">
         <Link className={buttonVariants({ variant: "outline" })} href="/">
-          ← Back to Home
+          <ArrowLeft />
+          Wróć do wyszukiwarki
         </Link>
       </div>
     </div>

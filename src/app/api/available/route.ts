@@ -11,7 +11,7 @@ export const runtime = "nodejs";
 /**
  * GET /api/available?q=<query>&lat=<lat>&lon=<lon>
  * Only currently available books.
- * Response: {"results": [ {...}, ... ]}
+ * Response: {"results": [ {...}, ... ], "demo": <bool>}
  */
 export async function GET(request: Request): Promise<Response> {
   const parsed = parseBookSearchParams(request);
@@ -20,12 +20,12 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   try {
-    const results = await findAvailable(
+    const { data: results, demo } = await findAvailable(
       parsed.params.query,
       parsed.params.lat,
       parsed.params.lon
     );
-    return NextResponse.json({ results });
+    return NextResponse.json({ results, demo });
   } catch (error) {
     return libraryErrorResponse(error);
   }

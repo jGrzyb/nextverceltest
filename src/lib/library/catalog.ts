@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { load } from "cheerio";
 import { config } from "./config";
+import { demoSearchBooks } from "./demo";
 import { Coordinates, DistanceCalculator } from "./coordinates";
 import { fetchWithRetry } from "./http";
 import type { Book, RawBook } from "./types";
@@ -232,12 +233,32 @@ export class LibraryCatalog {
     return books;
   }
 
+  /**
+   * Searches the live catalog, or the demo catalog depending on
+   * config.demoMode ("auto" falls back to demo data when the live one fails).
+   */
+  async search(query: string): Promise<{ books: RawBook[]; demo: boolean }> {
+    const demo = () => ({
+      books: demoSearchBooks(query, [...this.libraryCoordinates.keys()]),
+      demo: true,
+    });
+    if (config.demoMode === "on") return demo();
+    try {
+      return { books: await this.searchBooks(query), demo: false };
+    } catch (error) {
+      if (config.demoMode === "off") throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[library] Live catalog failed (${message}); using demo data`);
+      return demo();
+    }
+  }
+
   /** Fetches books and returns them sorted by distance from userLocation. */
   async getBooksWithDistances(
     query: string,
     userLocation: Coordinates
-  ): Promise<Book[]> {
-    const books = await this.searchBooks(query);
+  ): Promise<{ books: Book[]; demo: boolean }> {
+    const { books, demo } = await this.search(query);
 
     // Precompute branch distances once (cheap: ~57 branches).
     const branchDistances = new Map<number, number>();
@@ -248,13 +269,20 @@ export class LibraryCatalog {
       );
     }
 
-    return books
-      .map((book) => ({
-        ...book,
-        distance_km:
-          branchDistances.get(book.branch_number) ?? Number.POSITIVE_INFINITY,
-      }))
+    const withDistances = books
+      .map((book) => {
+        const coords = this.libraryCoordinates.get(book.branch_number);
+        return {
+          ...book,
+          distance_km:
+            branchDistances.get(book.branch_number) ??
+            Number.POSITIVE_INFINITY,
+          branch_lat: coords?.lat ?? null,
+          branch_lon: coords?.lon ?? null,
+        };
+      })
       .sort((a, b) => a.distance_km - b.distance_km);
+    return { books: withDistances, demo };
   }
 }
 

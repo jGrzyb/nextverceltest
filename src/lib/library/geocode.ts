@@ -1,4 +1,5 @@
-import { config } from "./config";
+import { config, hasLocationiqKey } from "./config";
+import { DEMO_FALLBACK, demoGeocode } from "./demo";
 import { Coordinates } from "./coordinates";
 
 /**
@@ -43,4 +44,36 @@ export async function geocodeAddress(
     console.debug(`[geocode] Failed to geocode address: '${address}'`, error);
     return null;
   }
+}
+
+export interface GeocodeResult {
+  lat: number;
+  lon: number;
+  /** Came from the built-in demo place list instead of LocationIQ. */
+  demo: boolean;
+  /** Unknown demo address: the centre of Kraków was used instead. */
+  approximate: boolean;
+}
+
+/**
+ * geocodeAddress() with the demo fallback from config.demoMode: without an
+ * API key (or when LocationIQ fails) a few known Kraków places are resolved
+ * locally and anything else falls back to the city centre.
+ */
+export async function geocodeWithFallback(
+  address: string
+): Promise<GeocodeResult | null> {
+  const useLive = config.demoMode !== "on" && hasLocationiqKey;
+  if (useLive || config.demoMode === "off") {
+    const coords = await geocodeAddress(address);
+    if (coords || config.demoMode === "off") {
+      return coords
+        ? { lat: coords.lat, lon: coords.lon, demo: false, approximate: false }
+        : null;
+    }
+  }
+  const known = demoGeocode(address);
+  return known
+    ? { ...known, demo: true, approximate: false }
+    : { ...DEMO_FALLBACK, demo: true, approximate: true };
 }
