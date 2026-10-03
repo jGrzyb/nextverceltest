@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { geocodeWithFallback } from "@/lib/library";
+import { GeocoderUnavailableError } from "@/lib/library/geocode";
 
 /**
  * GET /api/geocode?address=<address>
@@ -17,7 +18,15 @@ export async function GET(request: Request): Promise<Response> {
     );
   }
 
-  const coordinates = await geocodeWithFallback(address);
+  let coordinates;
+  try {
+    coordinates = await geocodeWithFallback(address);
+  } catch (error) {
+    if (error instanceof GeocoderUnavailableError) {
+      return NextResponse.json({ error: error.message }, { status: 503 });
+    }
+    throw error;
+  }
   if (!coordinates) {
     return NextResponse.json(
       { error: `address not found: '${address}'` },

@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { CatalogHttpError } from "./catalog";
+import { SEARCH_FIELDS, type SearchField } from "./types";
 
 export interface BookSearchParams {
   query: string;
   lat: number;
   lon: number;
+  field: SearchField;
 }
 
 export type BookSearchParseResult =
@@ -12,7 +14,7 @@ export type BookSearchParseResult =
   | { ok: false; error: string };
 
 /**
- * Parses and validates the ?q=&lat=&lon= query parameters shared by the
+ * Parses and validates the ?q=&lat=&lon=[&field=] query parameters shared by the
  * /books, /available and /closest endpoints.
  */
 export function parseBookSearchParams(
@@ -43,7 +45,12 @@ export function parseBookSearchParams(
     return { ok: false, error: "lon must be between -180 and 180" };
   }
 
-  return { ok: true, params: { query, lat, lon } };
+  const fieldRaw = searchParams.get("field") ?? "any";
+  if (!SEARCH_FIELDS.includes(fieldRaw as SearchField)) {
+    return { ok: false, error: "field must be one of: any, title, author" };
+  }
+
+  return { ok: true, params: { query, lat, lon, field: fieldRaw as SearchField } };
 }
 
 /**

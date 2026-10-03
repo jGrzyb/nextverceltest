@@ -9,7 +9,7 @@ import {
 export const runtime = "nodejs";
 
 /**
- * GET /api/closest?q=<query>&lat=<lat>&lon=<lon>
+ * GET /api/closest?q=<query>&lat=<lat>&lon=<lon>[&field=any|title|author]
  * The single closest available book.
  * Response: {"result": {...} | null, "demo": <bool>}
  */
@@ -23,7 +23,8 @@ export async function GET(request: Request): Promise<Response> {
     const { data: result, demo } = await findClosest(
       parsed.params.query,
       parsed.params.lat,
-      parsed.params.lon
+      parsed.params.lon,
+      { field: parsed.params.field }
     );
     return NextResponse.json({ result, demo });
   } catch (error) {

@@ -6,7 +6,7 @@
  * search always gives the same result.
  */
 
-import type { RawBook } from "./types";
+import type { RawBook, SearchField } from "./types";
 
 const DEMO_BOOKS: { title: string; author: string; tags?: string }[] = [
   { title: "Diuna / Frank Herbert", author: "Herbert, Frank (1920-1986)." },
@@ -85,13 +85,21 @@ function seededRandom(seed: string): () => number {
 /** Searches the built-in demo catalog; copies are spread over real branches. */
 export function demoSearchBooks(
   query: string,
-  branchNumbers: number[]
+  branchNumbers: number[],
+  catalogBaseUrl: string,
+  field: SearchField = "any"
 ): RawBook[] {
   const words = normalize(query).split(/\s+/).filter(Boolean);
   if (words.length === 0 || branchNumbers.length === 0) return [];
 
   const matches = DEMO_BOOKS.filter((book) => {
-    const haystack = normalize(`${book.title} ${book.author} ${book.tags ?? ""}`);
+    const haystack = normalize(
+      field === "title"
+        ? `${book.title.split(" / ")[0]} ${book.tags ?? ""}`
+        : field === "author"
+          ? book.author
+          : `${book.title} ${book.author} ${book.tags ?? ""}`
+    );
     return words.every((word) => haystack.includes(word));
   });
 
@@ -103,11 +111,22 @@ export function demoSearchBooks(
     while (picked.length < copies && pool.length > 0) {
       picked.push(pool.splice(Math.floor(random() * pool.length), 1)[0]);
     }
+    // Demo records have no real id, so link to a catalog search for the title.
+    const params = new URLSearchParams({
+      KatID: "0",
+      typ: "repl",
+      plnk: `q__${book.title.split(" / ")[0]}`,
+      sort: "byscore",
+      forigin: "krakow_biblioteka_ks",
+      flang: "pol",
+    });
+    const record_url = `${catalogBaseUrl}?${params}`;
     return picked.map((branch_number) => ({
       title: book.title,
       author: book.author,
       branch_number,
       available: random() < 0.45,
+      record_url,
     }));
   });
 }

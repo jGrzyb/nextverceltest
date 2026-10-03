@@ -9,7 +9,7 @@ import {
 export const runtime = "nodejs";
 
 /**
- * GET /api/books?q=<query>&lat=<lat>&lon=<lon>
+ * GET /api/books?q=<query>&lat=<lat>&lon=<lon>[&field=any|title|author]
  * All books matching the query, sorted by distance.
  * Response: {"results": [ {...}, ... ], "demo": <bool>}
  */
@@ -23,7 +23,8 @@ export async function GET(request: Request): Promise<Response> {
     const { data: results, demo } = await findBooks(
       parsed.params.query,
       parsed.params.lat,
-      parsed.params.lon
+      parsed.params.lon,
+      { field: parsed.params.field }
     );
     return NextResponse.json({ results, demo });
   } catch (error) {

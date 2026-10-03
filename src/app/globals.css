@@ -156,3 +156,131 @@
     transition-duration: 0.01ms !important;
   }
 }
+/* --- Branch map (Leaflet) ------------------------------------------------ */
+
+.branch-map {
+  isolation: isolate; /* keep Leaflet's z-indexes below the sticky header */
+  background: var(--muted);
+  font-family: inherit;
+}
+
+.dark .branch-map .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9);
+}
+
+.branch-pin {
+  display: flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid white;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 700;
+  color: white;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.3);
+  transition: transform 0.15s;
+}
+.branch-pin:hover {
+  transform: scale(1.15);
+}
+.branch-pin.available {
+  background: oklch(0.6 0.15 160);
+}
+.branch-pin.borrowed {
+  background: oklch(0.65 0.02 250);
+  opacity: 0.85;
+}
+/* Ring = open right now. */
+.branch-pin.open {
+  box-shadow:
+    0 0 0 3px oklch(0.6 0.15 160 / 0.35),
+    0 2px 6px rgb(0 0 0 / 0.3);
+}
+.branch-pin.borrowed.open {
+  box-shadow:
+    0 0 0 3px oklch(0.65 0.02 250 / 0.35),
+    0 2px 6px rgb(0 0 0 / 0.3);
+}
+
+.origin-pin {
+  position: relative;
+  display: block;
+  width: 18px;
+  height: 18px;
+  border: 3px solid white;
+  border-radius: 9999px;
+  background: var(--primary);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.35);
+}
+.origin-pin::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: inherit;
+  background: var(--primary);
+  animation: origin-pulse 2s ease-out infinite;
+  z-index: -1;
+}
+@keyframes origin-pulse {
+  from {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  to {
+    transform: scale(3);
+    opacity: 0;
+  }
+}
+
+.branch-map .leaflet-popup-content-wrapper,
+.branch-map .leaflet-popup-tip {
+  background: var(--popover);
+  color: var(--popover-foreground);
+}
+.branch-map .leaflet-popup-content {
+  margin: 12px 14px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.branch-map .branch-popup p {
+  margin: 0;
+}
+.branch-popup .name {
+  font-weight: 600;
+}
+.branch-popup .name span {
+  font-weight: 400;
+  color: var(--muted-foreground);
+}
+.branch-popup .status {
+  font-size: 12px;
+}
+.branch-popup .status.open {
+  color: oklch(0.55 0.15 160);
+}
+.branch-popup .status.closed {
+  color: var(--muted-foreground);
+}
+.branch-map .branch-popup .label {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.branch-popup ul {
+  margin: 2px 0 0;
+  padding-left: 16px;
+  list-style: disc;
+}
+.branch-popup .more {
+  list-style: none;
+  margin-left: -16px;
+  color: var(--muted-foreground);
+}
+.branch-popup a {
+  display: inline-block;
+  margin-top: 8px;
+  font-weight: 600;
+  color: var(--primary);
+}

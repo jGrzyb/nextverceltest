@@ -27,6 +27,10 @@ import {
   Sparkles,
   FlaskConical,
   X,
+  ExternalLink,
+  MapPin,
+  Map as MapIcon,
+  DoorOpen,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -48,11 +52,14 @@ import {
   formatDistance,
   plural,
 } from "@/lib/format";
-import type { Book } from "@/lib/library/types";
+import BranchMap, { type MapBranch } from "@/components/branch-map";
+import { branchStatus } from "@/lib/library/branch-hours";
+import type { Book, SearchField } from "@/lib/library/types";
+import type { OpenStatus } from "@/lib/opening-hours";
 import { cn } from "@/lib/utils";
 
-type LocationMode = "device" | "coords";
-type AvailabilityFilter = "all" | "available";
+type LocationMode = "device" | "address" | "coords";
+type AvailabilityFilter = "all" | "available" | "open";
 type SortBy = "distance" | "availability" | "title";
 
 interface Point {
@@ -62,6 +69,10 @@ interface Point {
 
 interface ResolvedLocation extends Point {
   label: string;
+  /** The address was not found, so the centre of Kraków was used. */
+  approximate?: boolean;
+  /** The address the user typed (shown in the notice). */
+  input?: string;
 }
 
 interface BookGroup {
@@ -84,7 +95,14 @@ const LOCATION_MODES: {
   icon: typeof LocateFixed;
 }[] = [
   { id: "device", label: "Moja lokalizacja", icon: LocateFixed },
+  { id: "address", label: "Adres", icon: MapPin },
   { id: "coords", label: "Współrzędne", icon: Crosshair },
+];
+
+const SEARCH_FIELD_OPTIONS: { id: SearchField; label: string; placeholder: string }[] = [
+  { id: "any", label: "Wszędzie", placeholder: "Tytuł lub autor, np. Diuna" },
+  { id: "title", label: "Tytuł", placeholder: "Tytuł, np. Lalka" },
+  { id: "author", label: "Autor", placeholder: "Autor, np. Tokarczuk" },
 ];
 
 const EXAMPLE_QUERIES = ["Diuna", "Wiedźmin", "Lalka", "Hobbit", "Tokarczuk"];
@@ -162,8 +180,8 @@ function getPosition(): Promise<GeolocationPosition> {
         reject(
           new Error(
             err.code === err.PERMISSION_DENIED
-              ? "Brak zgody na lokalizację. Zezwól na nią w przeglądarce albo wpisz współrzędne."
-              : "Nie udało się ustalić lokalizacji. Spróbuj ponownie albo wpisz współrzędne."
+              ? "Brak zgody na lokalizację. Zezwól na nią w przeglądarce albo wpisz adres."
+              : "Nie udało się ustalić lokalizacji. Spróbuj ponownie albo wpisz adres."
           )
         ),
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
@@ -211,7 +229,8 @@ function groupBooks(books: Book[]): BookGroup[] {
     if (!existing) {
       byBranch.set(book.branch_number, book);
     } else if (book.available && !existing.available) {
-      byBranch.set(book.branch_number, { ...existing, available: true });
+      // Prefer the edition that is on the shelf (and link to its record).
+      byBranch.set(book.branch_number, book);
     }
   }
 
@@ -236,6 +255,37 @@ function branchPoint(book: Book): Point | null {
     : null;
 }
 
+/** Open now = on the shelf and the branch is open. */
+function isOpenNow(book: Book, now: Date): boolean {
+  return branchStatus(book.branch_number, now)?.open ?? false;
+}
+
+/** One map pin per branch: what is on the shelf there across all titles. */
+function mapBranches(groups: BookGroup[], now: Date): MapBranch[] {
+  const byNumber = new Map<number, MapBranch>();
+  for (const group of groups) {
+    for (const copy of group.copies) {
+      const point = branchPoint(copy);
+      if (!point) continue;
+      let branch = byNumber.get(copy.branch_number);
+      if (!branch) {
+        branch = {
+          number: copy.branch_number,
+          ...point,
+          distanceKm: copy.distance_km ?? null,
+          availableTitles: [],
+          status: branchStatus(copy.branch_number, now),
+        };
+        byNumber.set(copy.branch_number, branch);
+      }
+      if (copy.available && !branch.availableTitles.includes(group.title)) {
+        branch.availableTitles.push(group.title);
+      }
+    }
+  }
+  return [...byNumber.values()];
+}
+
 // --- Component -------------------------------------------------------------
 
 export default function BookFinder() {
@@ -245,7 +295,9 @@ export default function BookFinder() {
 
   // Form state
   const [query, setQuery] = useState("");
+  const [field, setField] = useState<SearchField>("any");
   const [locationMode, setLocationMode] = useState<LocationMode>("device");
+  const [address, setAddress] = useState("");
   const [lat, setLat] = useState("");
   const [lon, setLon] = useState("");
   const [deviceLocation, setDeviceLocation] = useState<Point | null>(null);
@@ -256,6 +308,7 @@ export default function BookFinder() {
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<Book[] | null>(null);
   const [searchedQuery, setSearchedQuery] = useState("");
+  const [searchedField, setSearchedField] = useState<SearchField>("any");
   const [demo, setDemo] = useState(false);
   const [resolvedLocation, setResolvedLocation] =
     useState<ResolvedLocation | null>(null);
@@ -263,6 +316,16 @@ export default function BookFinder() {
   // View state
   const [availability, setAvailability] = useState<AvailabilityFilter>("all");
   const [sortBy, setSortBy] = useState<SortBy>("distance");
+  const [showMap, setShowMap] = useState(true);
+  const [mapFocus, setMapFocus] = useState<{ branch: number } | null>(null);
+  const mapRef = useRef<HTMLDivElement>(null);
+
+  // "Open now" changes over time: re-evaluate every minute.
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
 
   // "/" focuses the search box from anywhere on the page.
   useEffect(() => {
@@ -298,6 +361,35 @@ export default function BookFinder() {
   }
 
   async function resolveLocation(): Promise<ResolvedLocation> {
+    if (locationMode === "address") {
+      const trimmed = address.trim();
+      if (!trimmed) {
+        throw new Error("Wpisz ulicę i numer, np. Czarnowiejska 50.");
+      }
+      const response = await fetch(
+        `/api/geocode?address=${encodeURIComponent(trimmed)}`
+      );
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(
+          response.status === 404
+            ? `Nie znaleźliśmy adresu „${trimmed}” w Krakowie. Sprawdź nazwę ulicy i numer.`
+            : (data?.error ?? `Nie udało się znaleźć adresu (HTTP ${response.status}).`)
+        );
+      }
+      return {
+        lat: data.lat,
+        lon: data.lon,
+        label: data.approximate
+          ? "centrum Krakowa"
+          : data.precision === "street"
+            ? `${trimmed} (okolice ulicy)`
+            : trimmed,
+        approximate: Boolean(data.approximate),
+        input: trimmed,
+      };
+    }
+
     if (locationMode === "coords") {
       const parsedLat = Number.parseFloat(lat.replace(",", "."));
       const parsedLon = Number.parseFloat(lon.replace(",", "."));
@@ -341,7 +433,7 @@ export default function BookFinder() {
     try {
       const location = await resolveLocation();
       const response = await fetch(
-        `/api/books?q=${encodeURIComponent(q)}&lat=${location.lat}&lon=${location.lon}`
+        `/api/books?q=${encodeURIComponent(q)}&lat=${location.lat}&lon=${location.lon}&field=${field}`
       );
       const data = await response.json().catch(() => null);
       if (!response.ok) {
@@ -354,6 +446,8 @@ export default function BookFinder() {
       setResults(data.results);
       setDemo(Boolean(data.demo));
       setSearchedQuery(q);
+      setSearchedField(field);
+      setMapFocus(null);
       setResolvedLocation(location);
       rememberSearch(q);
       requestAnimationFrame(() =>
@@ -370,10 +464,12 @@ export default function BookFinder() {
 
   const visibleGroups = useMemo(() => {
     let list = groups;
-    if (availability === "available") {
+    if (availability !== "all") {
+      const keep = (c: Book) =>
+        c.available && (availability === "available" || isOpenNow(c, now));
       list = list
-        .filter((g) => g.availableCount > 0)
-        .map((g) => ({ ...g, copies: g.copies.filter((c) => c.available) }));
+        .map((g) => ({ ...g, copies: g.copies.filter(keep) }))
+        .filter((g) => g.copies.length > 0);
     }
     const nearest = (g: BookGroup) =>
       g.nearestAvailable ? distanceOf(g.nearestAvailable) : Number.POSITIVE_INFINITY;
@@ -395,7 +491,7 @@ export default function BookFinder() {
         );
     }
     return sorted;
-  }, [groups, availability, sortBy]);
+  }, [groups, availability, sortBy, now]);
 
   const closest = useMemo(() => {
     let best: { group: BookGroup; copy: Book } | null = null;
@@ -407,6 +503,30 @@ export default function BookFinder() {
     }
     return best;
   }, [groups]);
+
+  // When the nearest copy's branch is closed: the nearest one open now.
+  const closestOpen = useMemo(() => {
+    if (!closest || isOpenNow(closest.copy, now)) return null;
+    let best: { group: BookGroup; copy: Book } | null = null;
+    for (const group of groups) {
+      for (const copy of group.copies) {
+        if (!copy.available || !isOpenNow(copy, now)) continue;
+        if (!best || distanceOf(copy) < distanceOf(best.copy)) best = { group, copy };
+      }
+    }
+    return best;
+  }, [groups, closest, now]);
+
+  const pins = useMemo(() => mapBranches(visibleGroups, now), [visibleGroups, now]);
+
+  function focusBranch(branch: number) {
+    setShowMap(true);
+    // A new object so clicking the same branch again re-centres the map.
+    setMapFocus({ branch });
+    requestAnimationFrame(() =>
+      mapRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })
+    );
+  }
 
   const branchesWithBook = new Set(
     groups.flatMap((g) => g.copies.filter((c) => c.available).map((c) => c.branch_number))
@@ -449,7 +569,7 @@ export default function BookFinder() {
                     id="query"
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
-                    placeholder="Tytuł lub autor, np. Diuna"
+                    placeholder={SEARCH_FIELD_OPTIONS.find((o) => o.id === field)!.placeholder}
                     autoComplete="off"
                     enterKeyHint="search"
                     className="h-12 rounded-xl pr-16 pl-10 text-base md:text-base"
@@ -480,6 +600,36 @@ export default function BookFinder() {
                   {loading ? <Loader2 className="animate-spin" /> : <Search />}
                   {loading ? "Szukam…" : "Szukaj"}
                 </Button>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-muted-foreground">Szukaj w:</span>
+                <div
+                  role="radiogroup"
+                  aria-label="Pole wyszukiwania"
+                  className="inline-flex gap-0.5 rounded-lg bg-muted p-0.5"
+                >
+                  {SEARCH_FIELD_OPTIONS.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={field === option.id}
+                      onClick={() => {
+                        setField(option.id);
+                        queryInput.current?.focus();
+                      }}
+                      className={cn(
+                        "h-6 rounded-md px-2.5 font-medium transition-colors",
+                        field === option.id
+                          ? "bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <QuickChips
@@ -530,6 +680,26 @@ export default function BookFinder() {
                   })}
                 </div>
               </div>
+
+              {locationMode === "address" && (
+                <div className="space-y-1 animate-fade-up">
+                  <div className="relative">
+                    <MapPin className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      id="address"
+                      value={address}
+                      onChange={(event) => setAddress(event.target.value)}
+                      placeholder="Ulica i numer, np. Czarnowiejska 50"
+                      aria-label="Adres w Krakowie"
+                      autoComplete="street-address"
+                      className="h-9 bg-background pl-8"
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Szukamy w granicach Krakowa, więc nie trzeba dopisywać miasta.
+                  </p>
+                </div>
+              )}
 
               {locationMode === "coords" && (
                 <div className="grid grid-cols-2 gap-2 animate-fade-up">
@@ -637,20 +807,36 @@ export default function BookFinder() {
             />
           ) : (
             <div className="space-y-5">
-              {demo && <DemoNotice />}
+              {(demo || resolvedLocation?.approximate) && (
+                <DemoNotice
+                  demo={demo}
+                  approximateFrom={
+                    resolvedLocation?.approximate ? (resolvedLocation.input ?? null) : null
+                  }
+                />
+              )}
 
               {closest && (
                 <ClosestCard
                   group={closest.group}
                   copy={closest.copy}
                   origin={resolvedLocation}
+                  status={branchStatus(closest.copy.branch_number, now)}
+                  openAlternative={closestOpen}
+                  onShowOnMap={focusBranch}
                 />
               )}
 
               <div className="flex flex-wrap items-end justify-between gap-3">
                 <div>
                   <h2 className="text-lg font-semibold tracking-tight">
-                    Wyniki dla „{searchedQuery}”
+                    Wyniki dla{" "}
+                    {searchedField !== "any" && (
+                      <span className="font-normal text-muted-foreground">
+                        {searchedField === "title" ? "tytułu" : "autora"}{" "}
+                      </span>
+                    )}
+                    „{searchedQuery}”
                   </h2>
                   <p className="text-sm text-muted-foreground">
                     {groups.length} {plural(groups.length, "tytuł", "tytuły", "tytułów")} ·{" "}
@@ -660,12 +846,13 @@ export default function BookFinder() {
                     {resolvedLocation && <> · blisko: {resolvedLocation.label}</>}
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <div className="inline-flex gap-0.5 rounded-lg border bg-background p-0.5">
                     {(
                       [
                         ["all", "Wszystkie"],
                         ["available", "Dostępne"],
+                        ["open", "Otwarte teraz"],
                       ] as const
                     ).map(([id, label]) => (
                       <button
@@ -674,7 +861,7 @@ export default function BookFinder() {
                         aria-pressed={availability === id}
                         onClick={() => setAvailability(id)}
                         className={cn(
-                          "h-7 rounded-md px-2.5 text-xs font-medium transition-colors",
+                          "h-7 rounded-md px-2.5 text-xs font-medium whitespace-nowrap transition-colors",
                           availability === id
                             ? "bg-secondary text-secondary-foreground"
                             : "text-muted-foreground hover:text-foreground"
@@ -684,6 +871,17 @@ export default function BookFinder() {
                       </button>
                     ))}
                   </div>
+                  <Button
+                    type="button"
+                    variant={showMap ? "secondary" : "outline"}
+                    size="sm"
+                    className="h-8"
+                    aria-pressed={showMap}
+                    onClick={() => setShowMap((v) => !v)}
+                  >
+                    <MapIcon />
+                    Mapa
+                  </Button>
                   <Select
                     value={sortBy}
                     onValueChange={(value) => setSortBy(value as SortBy)}
@@ -704,11 +902,30 @@ export default function BookFinder() {
                 </div>
               </div>
 
+              {showMap && pins.length > 0 && (
+                <div ref={mapRef} className="space-y-2 animate-fade-up scroll-mt-24">
+                  <BranchMap
+                    origin={resolvedLocation}
+                    branches={pins}
+                    focus={mapFocus}
+                  />
+                  <MapLegend />
+                </div>
+              )}
+
               {visibleGroups.length === 0 ? (
                 <EmptyState
-                  icon={Clock}
-                  title="Wszystkie egzemplarze są wypożyczone"
-                  text="Żadna filia nie ma teraz tej książki na półce. Pokaż wszystkie, żeby zobaczyć, gdzie można ją zarezerwować."
+                  icon={availability === "open" ? DoorOpen : Clock}
+                  title={
+                    availability === "open"
+                      ? "Żadna filia z tą książką nie jest teraz otwarta"
+                      : "Wszystkie egzemplarze są wypożyczone"
+                  }
+                  text={
+                    availability === "open"
+                      ? "Pokaż wszystkie dostępne, żeby zobaczyć, gdzie i kiedy można po nią przyjść."
+                      : "Żadna filia nie ma teraz tej książki na półce. Pokaż wszystkie, żeby zobaczyć, gdzie można ją zarezerwować."
+                  }
                   action={
                     <Button variant="outline" size="sm" onClick={() => setAvailability("all")}>
                       Pokaż wszystkie
@@ -723,7 +940,12 @@ export default function BookFinder() {
                       className="animate-fade-up"
                       style={{ animationDelay: `${Math.min(index, 8) * 40}ms` }}
                     >
-                      <BookCard group={group} origin={resolvedLocation} />
+                      <BookCard
+                        group={group}
+                        origin={resolvedLocation}
+                        now={now}
+                        onShowOnMap={focusBranch}
+                      />
                     </li>
                   ))}
                 </ul>
@@ -787,14 +1009,30 @@ function QuickChips({
   );
 }
 
-function DemoNotice() {
+function DemoNotice({
+  demo,
+  approximateFrom,
+}: {
+  demo: boolean;
+  approximateFrom: string | null;
+}) {
   return (
     <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-900 animate-fade-up dark:text-amber-200">
       <FlaskConical className="mt-0.5 size-4 shrink-0" />
-      <p>
-        <span className="font-semibold">Tryb demo.</span> Katalog biblioteki
-        jest teraz niedostępny, więc pokazujemy przykładowe dane.
-      </p>
+      <div className="space-y-0.5">
+        {demo && (
+          <p>
+            <span className="font-semibold">Tryb demo.</span> Katalog
+            biblioteki jest teraz niedostępny, więc pokazujemy przykładowe dane.
+          </p>
+        )}
+        {approximateFrom && (
+          <p>
+            Nie udało się zlokalizować adresu „{approximateFrom}”, więc
+            odległości liczymy od centrum Krakowa.
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -822,10 +1060,17 @@ function ClosestCard({
   group,
   copy,
   origin,
+  status,
+  openAlternative,
+  onShowOnMap,
 }: {
   group: BookGroup;
   copy: Book;
   origin: Point | null;
+  status: OpenStatus | null;
+  /** Nearest copy in a branch that is open now (when this one is closed). */
+  openAlternative: { group: BookGroup; copy: Book } | null;
+  onShowOnMap: (branch: number) => void;
 }) {
   const point = branchPoint(copy);
   const distance = formatDistance(copy.distance_km);
@@ -847,33 +1092,99 @@ function ClosestCard({
           <p className="mt-0.5 text-sm opacity-80" title={group.rawAuthor}>
             {group.author}
           </p>
-          <p className="mt-3 inline-flex items-center gap-2 text-sm font-medium">
-            <Building2 className="size-4" />
-            Filia nr {copy.branch_number}
+          <p className="mt-3 flex flex-wrap items-center gap-2 text-sm font-medium">
+            <button
+              type="button"
+              onClick={() => onShowOnMap(copy.branch_number)}
+              className="inline-flex items-center gap-2 underline-offset-4 hover:underline"
+              title="Pokaż na mapie"
+            >
+              <Building2 className="size-4" />
+              Filia nr {copy.branch_number}
+            </button>
             {distance && (
               <span className="rounded-full bg-white/15 px-2 py-0.5 text-xs">
                 {distance} od Ciebie
               </span>
             )}
+            {status && (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs",
+                  status.open ? "bg-white text-primary" : "bg-black/15"
+                )}
+              >
+                <span
+                  className={cn(
+                    "size-1.5 rounded-full",
+                    status.open
+                      ? status.closingSoon
+                        ? "bg-amber-500"
+                        : "bg-emerald-500"
+                      : "bg-current opacity-60"
+                  )}
+                  aria-hidden
+                />
+                {status.label}
+              </span>
+            )}
           </p>
+          {openAlternative && (
+            <p className="mt-2 text-xs opacity-90">
+              Otwarta teraz najbliżej:{" "}
+              <button
+                type="button"
+                onClick={() => onShowOnMap(openAlternative.copy.branch_number)}
+                className="font-semibold underline underline-offset-2"
+              >
+                filia nr {openAlternative.copy.branch_number}
+              </button>
+              {formatDistance(openAlternative.copy.distance_km) &&
+                `, ${formatDistance(openAlternative.copy.distance_km)}`}
+              {openAlternative.group.key !== group.key && ` (${openAlternative.group.title})`}
+            </p>
+          )}
         </div>
-        {point && (
-          <a
-            href={directionsUrl(origin, point)}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl bg-background px-4 text-sm font-medium text-foreground shadow-sm transition-transform hover:-translate-y-0.5"
-          >
-            <Navigation className="size-4" />
-            Wyznacz trasę
-          </a>
-        )}
+        <div className="flex shrink-0 flex-wrap gap-2">
+          {copy.record_url && (
+            <a
+              href={copy.record_url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-white/15 px-4 text-sm font-medium transition-colors hover:bg-white/25"
+            >
+              <ExternalLink className="size-4" />
+              W katalogu
+            </a>
+          )}
+          {point && (
+            <a
+              href={directionsUrl(origin, point)}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-background px-4 text-sm font-medium text-foreground shadow-sm transition-transform hover:-translate-y-0.5"
+            >
+              <Navigation className="size-4" />
+              Wyznacz trasę
+            </a>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-function BookCard({ group, origin }: { group: BookGroup; origin: Point | null }) {
+function BookCard({
+  group,
+  origin,
+  now,
+  onShowOnMap,
+}: {
+  group: BookGroup;
+  origin: Point | null;
+  now: Date;
+  onShowOnMap: (branch: number) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const copies = expanded ? group.copies : group.copies.slice(0, VISIBLE_COPIES);
   const hidden = group.copies.length - copies.length;
@@ -921,7 +1232,13 @@ function BookCard({ group, origin }: { group: BookGroup; origin: Point | null })
 
       <ul className="divide-y border-t">
         {copies.map((copy, index) => (
-          <CopyRow key={`${copy.branch_number}-${index}`} copy={copy} origin={origin} />
+          <CopyRow
+            key={`${copy.branch_number}-${index}`}
+            copy={copy}
+            origin={origin}
+            status={branchStatus(copy.branch_number, now)}
+            onShowOnMap={onShowOnMap}
+          />
         ))}
       </ul>
 
@@ -940,7 +1257,17 @@ function BookCard({ group, origin }: { group: BookGroup; origin: Point | null })
   );
 }
 
-function CopyRow({ copy, origin }: { copy: Book; origin: Point | null }) {
+function CopyRow({
+  copy,
+  origin,
+  status,
+  onShowOnMap,
+}: {
+  copy: Book;
+  origin: Point | null;
+  status: OpenStatus | null;
+  onShowOnMap: (branch: number) => void;
+}) {
   const point = branchPoint(copy);
   const distance = formatDistance(copy.distance_km);
   return (
@@ -952,15 +1279,62 @@ function CopyRow({ copy, origin }: { copy: Book; origin: Point | null }) {
         )}
         aria-hidden
       />
-      <span className={cn("font-medium", !copy.available && "text-muted-foreground")}>
-        Filia nr {copy.branch_number}
-      </span>
-      <span className="text-xs text-muted-foreground">
-        {copy.available ? "na półce" : "wypożyczona"}
-      </span>
-      <span className="ml-auto tabular-nums text-muted-foreground">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          {point ? (
+            <button
+              type="button"
+              onClick={() => onShowOnMap(copy.branch_number)}
+              className={cn(
+                "font-medium underline-offset-4 hover:text-primary hover:underline",
+                !copy.available && "text-muted-foreground"
+              )}
+              title="Pokaż na mapie"
+            >
+              Filia nr {copy.branch_number}
+            </button>
+          ) : (
+            <span className={cn("font-medium", !copy.available && "text-muted-foreground")}>
+              Filia nr {copy.branch_number}
+            </span>
+          )}
+          <span className="text-xs text-muted-foreground">
+            {copy.available ? "na półce" : "wypożyczona"}
+          </span>
+        </div>
+        {status && (
+          <p
+            className={cn(
+              "text-xs",
+              status.open
+                ? status.closingSoon
+                  ? "text-amber-600 dark:text-amber-400"
+                  : "text-emerald-600 dark:text-emerald-400"
+                : "text-muted-foreground"
+            )}
+            title={`Dziś: ${status.today}`}
+          >
+            {status.label}
+          </p>
+        )}
+      </div>
+      <span className="ml-auto tabular-nums whitespace-nowrap text-muted-foreground">
         {distance ?? "—"}
       </span>
+      {copy.record_url ? (
+        <a
+          href={copy.record_url}
+          target="_blank"
+          rel="noreferrer"
+          className={cn(buttonVariants({ variant: "ghost", size: "icon-sm" }), "-my-1")}
+          aria-label={`Książka w katalogu (filia nr ${copy.branch_number})`}
+          title="Zobacz w katalogu biblioteki"
+        >
+          <ExternalLink />
+        </a>
+      ) : (
+        <span className="size-7" aria-hidden />
+      )}
       {point ? (
         <a
           href={directionsUrl(origin, point)}
@@ -976,6 +1350,27 @@ function CopyRow({ copy, origin }: { copy: Book; origin: Point | null }) {
         <span className="size-7" aria-hidden />
       )}
     </li>
+  );
+}
+
+function MapLegend() {
+  const item = "inline-flex items-center gap-1.5";
+  return (
+    <div className="flex flex-wrap gap-x-4 gap-y-1 px-1 text-xs text-muted-foreground">
+      <span className={item}>
+        <span className="size-2.5 rounded-full bg-[oklch(0.6_0.15_160)]" /> na półce
+      </span>
+      <span className={item}>
+        <span className="size-2.5 rounded-full bg-[oklch(0.65_0.02_250)]" /> wypożyczona
+      </span>
+      <span className={item}>
+        <span className="size-2.5 rounded-full bg-[oklch(0.6_0.15_160)] ring-2 ring-[oklch(0.6_0.15_160/0.35)] ring-offset-1 ring-offset-background" />{" "}
+        otwarte teraz
+      </span>
+      <span className={item}>
+        <span className="size-2.5 rounded-full bg-primary" /> Ty
+      </span>
+    </div>
   );
 }
 

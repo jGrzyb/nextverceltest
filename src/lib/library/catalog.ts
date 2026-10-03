@@ -5,9 +5,21 @@ import { config } from "./config";
 import { demoSearchBooks } from "./demo";
 import { Coordinates, DistanceCalculator } from "./coordinates";
 import { fetchWithRetry } from "./http";
-import type { Book, RawBook } from "./types";
+import type { Book, RawBook, SearchField } from "./types";
 
 export type { Book, RawBook };
+
+/**
+ * Catalog search syntax: "q__" searches every field; the advanced search
+ * uses "__tytul_" / "__autor_" for a single field.
+ */
+const PLNK_PREFIX: Record<SearchField, string> = {
+  any: "q__",
+  title: "__tytul_",
+  author: "__autor_",
+};
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Thrown when the catalog site cannot be reached or responds with an error. */
 export class CatalogHttpError extends Error {
@@ -21,6 +33,34 @@ export class CatalogHttpError extends Error {
 function branchNumberFromName(name: string): number | null {
   const match = /\d+/.exec(name);
   return match ? Number.parseInt(match[0], 10) : null;
+}
+
+/** Catalog record ids look like "KrB26005984" (MARC field 001). */
+const RECORD_ID_IN_HREF = /[?&]001=([^&#"'\s]+)/;
+const RECORD_ID_IN_TEXT = /\b(KrB\d{5,})\b/;
+
+/**
+ * Finds the catalog record id of a search hit. The id appears in the
+ * record's links ("index.php?KatID=0&typ=record&001=KrB26005984"); look in
+ * the record element first, then in its wrapper, then anywhere in its HTML.
+ */
+function findRecordId(
+  $: ReturnType<typeof load>,
+  record: ReturnType<ReturnType<typeof load>>
+): string | null {
+  for (const scope of [record, record.parent(), record.parent().parent()]) {
+    let id: string | null = null;
+    scope.find("a[href*='001=']").each((_, link) => {
+      const match = RECORD_ID_IN_HREF.exec($(link).attr("href") ?? "");
+      if (match) {
+        id = decodeURIComponent(match[1]);
+        return false; // stop iterating
+      }
+    });
+    if (id) return id;
+  }
+  const match = RECORD_ID_IN_TEXT.exec(record.parent().html() ?? "");
+  return match ? match[1] : null;
 }
 
 /** Minimal RFC-4180-style CSV line parser (handles quoted fields). */
@@ -141,41 +181,114 @@ export class LibraryCatalog {
     );
   }
 
-  /** Scrapes book availability from the library catalog. */
-  async searchBooks(query: string): Promise<RawBook[]> {
+  /** Public catalog page of one record (edition). */
+  recordUrl(recordId: string): string {
+    const params = new URLSearchParams({ KatID: "0", typ: "record", "001": recordId });
+    return `${this.baseUrl}?${params}`;
+  }
+
+  /**
+   * Scrapes book availability from the library catalog, following the
+   * "next page" link (`#navi-arr-next`) up to config.catalogMaxPages pages.
+   *
+   * The catalog has no page-number parameter: the next-page URL carries an
+   * opaque, server-generated `a=` token (zlib + base64 state of the result
+   * set), so the only reliable way to page is to follow the link the
+   * catalog itself renders. Cookies are carried over between pages in case
+   * that state is tied to the session.
+   */
+  async searchBooks(query: string, field: SearchField = "any"): Promise<RawBook[]> {
     const params = new URLSearchParams({
       KatID: "0",
       typ: "repl",
-      plnk: `q__${query}`,
+      plnk: `${PLNK_PREFIX[field]}${query}`,
       sort: "byscore",
       forigin: "krakow_biblioteka_ks",
       flang: "pol",
     });
 
-    console.info(`[library] Searching for books with query: '${query}'`);
+    console.info(`[library] Searching for books with query: '${query}' (${field})`);
+
+    const cookies = new Map<string, string>();
+    const seenUrls = new Set<string>();
+    const seenRecords = new Set<string>();
+    const books: RawBook[] = [];
+    let url: string | null = `${this.baseUrl}?${params}`;
+
+    for (let page = 1; url && page <= config.catalogMaxPages; page++) {
+      if (page > 1) await sleep(config.catalogPageDelayMs);
+      seenUrls.add(url);
+
+      let html: string;
+      try {
+        html = await this.fetchPage(url, cookies);
+      } catch (error) {
+        // Later pages are a bonus: keep what we already have.
+        if (page > 1) {
+          console.warn(`[library] Page ${page} failed, stopping:`, error);
+          break;
+        }
+        throw error;
+      }
+
+      const parsed = this.parseResultsPage(html, url);
+      const fresh = parsed.books.filter(
+        (book) => !book.record_url || !seenRecords.has(book.record_url)
+      );
+      // A page with only records we already have means the paging looped.
+      if (page > 1 && parsed.books.length > 0 && fresh.length === 0) break;
+      for (const book of fresh) books.push(book);
+      for (const book of parsed.books) {
+        if (book.record_url) seenRecords.add(book.record_url);
+      }
+
+      url = parsed.nextUrl && !seenUrls.has(parsed.nextUrl) ? parsed.nextUrl : null;
+      console.info(
+        `[library] Page ${page}: ${parsed.books.length} entries${url ? "" : " (last)"}`
+      );
+    }
+
+    console.info(`[library] Found ${books.length} book entries`);
+    return books;
+  }
+
+  /** GET one catalog page, sending and collecting cookies. */
+  private async fetchPage(url: string, cookies: Map<string, string>): Promise<string> {
+    const headers: Record<string, string> = { "User-Agent": config.userAgent };
+    if (cookies.size > 0) {
+      headers.Cookie = [...cookies].map(([k, v]) => `${k}=${v}`).join("; ");
+    }
 
     let response: Response;
     try {
-      response = await fetchWithRetry(`${this.baseUrl}?${params}`, {
-        headers: { "User-Agent": config.userAgent },
-      });
+      response = await fetchWithRetry(url, { headers });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new CatalogHttpError(`Catalog request failed: ${message}`);
     }
-
     if (!response.ok) {
-      throw new CatalogHttpError(
-        `Catalog responded with HTTP ${response.status}`
-      );
+      throw new CatalogHttpError(`Catalog responded with HTTP ${response.status}`);
     }
+    for (const header of response.headers.getSetCookie?.() ?? []) {
+      const [pair] = header.split(";");
+      const eq = pair.indexOf("=");
+      if (eq > 0) cookies.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+    }
+    return response.text();
+  }
 
-    const html = await response.text();
+  /** Parses one results page: its books and the next-page URL (if any). */
+  parseResultsPage(html: string, pageUrl: string): { books: RawBook[]; nextUrl: string | null } {
     const $ = load(html);
+
+    // On the last page the arrow is still rendered, just without href.
+    const nextHref = $("a#navi-arr-next[href]").first().attr("href");
+    const nextUrl = nextHref ? new URL(nextHref, pageUrl).toString() : null;
+
     const container = $("div.found-records").first();
     if (container.length === 0) {
       console.warn("[library] No records container found in response");
-      return [];
+      return { books: [], nextUrl: null };
     }
 
     const books: RawBook[] = [];
@@ -184,6 +297,9 @@ export class LibraryCatalog {
       const record = $(recordElement);
       const desc = record.find("div.record-meta").first();
       if (desc.length === 0) return;
+
+      const recordId = findRecordId($, record);
+      const record_url = recordId ? this.recordUrl(recordId) : null;
 
       // Title: prefer the dedicated element, fall back to h3 / any *title* class.
       let titleSource = desc.find("span.desc-o-mb-title").first();
@@ -225,26 +341,28 @@ export class LibraryCatalog {
 
           if (!title || !author) return; // skip records with missing title/author
 
-          books.push({ title, author, branch_number, available });
+          books.push({ title, author, branch_number, available, record_url });
         });
     });
 
-    console.info(`[library] Found ${books.length} book entries`);
-    return books;
+    return { books, nextUrl };
   }
 
   /**
    * Searches the live catalog, or the demo catalog depending on
    * config.demoMode ("auto" falls back to demo data when the live one fails).
    */
-  async search(query: string): Promise<{ books: RawBook[]; demo: boolean }> {
+  async search(
+    query: string,
+    field: SearchField = "any"
+  ): Promise<{ books: RawBook[]; demo: boolean }> {
     const demo = () => ({
-      books: demoSearchBooks(query, [...this.libraryCoordinates.keys()]),
+      books: demoSearchBooks(query, [...this.libraryCoordinates.keys()], this.baseUrl, field),
       demo: true,
     });
     if (config.demoMode === "on") return demo();
     try {
-      return { books: await this.searchBooks(query), demo: false };
+      return { books: await this.searchBooks(query, field), demo: false };
     } catch (error) {
       if (config.demoMode === "off") throw error;
       const message = error instanceof Error ? error.message : String(error);
@@ -256,9 +374,10 @@ export class LibraryCatalog {
   /** Fetches books and returns them sorted by distance from userLocation. */
   async getBooksWithDistances(
     query: string,
-    userLocation: Coordinates
+    userLocation: Coordinates,
+    field: SearchField = "any"
   ): Promise<{ books: Book[]; demo: boolean }> {
-    const { books, demo } = await this.search(query);
+    const { books, demo } = await this.search(query, field);
 
     // Precompute branch distances once (cheap: ~57 branches).
     const branchDistances = new Map<number, number>();

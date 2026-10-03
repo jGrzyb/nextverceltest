@@ -9,7 +9,7 @@ import {
 export const runtime = "nodejs";
 
 /**
- * GET /api/available?q=<query>&lat=<lat>&lon=<lon>
+ * GET /api/available?q=<query>&lat=<lat>&lon=<lon>[&field=any|title|author]
  * Only currently available books.
  * Response: {"results": [ {...}, ... ], "demo": <bool>}
  */
@@ -23,7 +23,8 @@ export async function GET(request: Request): Promise<Response> {
     const { data: results, demo } = await findAvailable(
       parsed.params.query,
       parsed.params.lat,
-      parsed.params.lon
+      parsed.params.lon,
+      { field: parsed.params.field }
     );
     return NextResponse.json({ results, demo });
   } catch (error) {
