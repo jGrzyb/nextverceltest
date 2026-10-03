@@ -51,8 +51,9 @@ export default function AboutPage() {
               Route Handlers. On Vercel each one is deployed as an isolated
               serverless function — no server to manage, scaling to zero when
               idle and spinning up automatically on request. This project
-              includes one at <code>/api/hello</code> (GET and POST) that you
-              can call from the Home page.
+              exposes the library finder at <code>/api/books</code>,{" "}
+              <code>/api/available</code>, <code>/api/closest</code>,{" "}
+              <code>/api/geocode</code> and <code>/api/health</code>.
             </p>
           </CardContent>
         </Card>
