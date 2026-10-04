@@ -28,6 +28,18 @@ export function cleanTitle(title: string): string {
   return cleaned || title;
 }
 
+/** The subtitle cleanTitle() drops: "Lalka : powieść / B. Prus" -> "powieść"; "" if none. */
+export function subtitleOf(title: string): string {
+  const main = title.split(" / ")[0].replace(/\[[^\]]*\]/g, "");
+  const at = main.indexOf(" : ");
+  if (at < 0) return "";
+  return main
+    .slice(at + 3)
+    .replace(/\s+/g, " ")
+    .replace(/[\s/:;.,=]+$/, "")
+    .trim();
+}
+
 /** Lowercase, no diacritics or punctuation: "Diuna." and "diuna" match. */
 export function matchKey(text: string): string {
   return text

@@ -155,8 +155,13 @@ export default function BranchMap({ origin, branches, focus }: Props) {
         center: KRAKOW_CENTRE,
         zoom: 12,
         scrollWheelZoom: false,
-        attributionControl: true,
+        attributionControl: false,
       });
+      // Leaflet's default attribution prefix carries a flag; keep just the
+      // credits (Leaflet + the OpenStreetMap licence requirement).
+      L.control
+        .attribution({ prefix: '<a href="https://leafletjs.com">Leaflet</a>' })
+        .addTo(map);
       created = map;
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         maxZoom: 19,

@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { load } from "cheerio";
 import { config } from "./config";
-import { demoSearchBooks } from "./demo";
+import { demoSearchPages } from "./demo";
 import { Coordinates, DistanceCalculator } from "./coordinates";
 import { fetchWithRetry } from "./http";
 import type { Book, RawBook, SearchField } from "./types";
@@ -36,21 +36,24 @@ function branchNumberFromName(name: string): number | null {
 }
 
 /** Catalog record ids look like "KrB26005984" (MARC field 001). */
-const RECORD_ID_IN_HREF = /[?&]001=([^&#"'\s]+)/;
+const RECORD_ID_IN_HREF = /(?:[?&]|%26)(?:amp;)?001(?:=|%3D)([^&#"'\s%]+)/i;
 const RECORD_ID_IN_TEXT = /\b(KrB\d{5,})\b/;
 
 /**
  * Finds the catalog record id of a search hit. The id appears in the
- * record's links ("index.php?KatID=0&typ=record&001=KrB26005984"); look in
- * the record element first, then in its wrapper, then anywhere in its HTML.
+ * record's links ("index.php?KatID=0&typ=record&001=KrB26005984"), but
+ * where the link sits differs between result layouts (plain search vs
+ * title/author search), so walk up from the record to the element that
+ * wraps just this one hit, and look at links, then any attribute, then
+ * the HTML text.
  */
 function findRecordId(
   $: ReturnType<typeof load>,
   record: ReturnType<ReturnType<typeof load>>
 ): string | null {
-  for (const scope of [record, record.parent(), record.parent().parent()]) {
+  for (const scope of recordScopes(record)) {
     let id: string | null = null;
-    scope.find("a[href*='001=']").each((_, link) => {
+    scope.find("a[href]").addBack("a[href]").each((_, link) => {
       const match = RECORD_ID_IN_HREF.exec($(link).attr("href") ?? "");
       if (match) {
         id = decodeURIComponent(match[1]);
@@ -58,9 +61,28 @@ function findRecordId(
       }
     });
     if (id) return id;
+    const match = RECORD_ID_IN_TEXT.exec($.html(scope));
+    if (match) return match[1];
   }
-  const match = RECORD_ID_IN_TEXT.exec(record.parent().html() ?? "");
-  return match ? match[1] : null;
+  return null;
+}
+
+/**
+ * The record element and its ancestors, as long as they contain this one
+ * hit only, so a link of the neighbouring record is never picked up.
+ */
+function recordScopes(
+  record: ReturnType<ReturnType<typeof load>>
+): ReturnType<ReturnType<typeof load>>[] {
+  const scopes = [record];
+  let current = record.parent();
+  for (let depth = 0; depth < 4 && current.length > 0; depth++) {
+    if (current.is("div.found-records, body, html")) break;
+    if (current.find("div.record-details").length > 1) break;
+    scopes.push(current);
+    current = current.parent();
+  }
+  return scopes;
 }
 
 /** Minimal RFC-4180-style CSV line parser (handles quoted fields). */
@@ -187,6 +209,17 @@ export class LibraryCatalog {
     return `${this.baseUrl}?${params}`;
   }
 
+  /** Catalog search for a title: the fallback link when a hit has no record id. */
+  titleSearchUrl(title: string): string {
+    const params = new URLSearchParams({
+      KatID: "0",
+      typ: "repl",
+      plnk: `__tytul_${title.split(" / ")[0].split(" : ")[0].trim()}`,
+      sort: "byscore",
+    });
+    return `${this.baseUrl}?${params}`;
+  }
+
   /**
    * Scrapes book availability from the library catalog, following the
    * "next page" link (`#navi-arr-next`) up to config.catalogMaxPages pages.
@@ -198,6 +231,22 @@ export class LibraryCatalog {
    * that state is tied to the session.
    */
   async searchBooks(query: string, field: SearchField = "any"): Promise<RawBook[]> {
+    const books: RawBook[] = [];
+    for await (const page of this.searchBookPages(query, field)) books.push(...page);
+    console.info(`[library] Found ${books.length} book entries`);
+    return books;
+  }
+
+  /**
+   * Same as searchBooks(), but yields each results page as soon as it is
+   * scraped, so the UI can show the first page while later ones load.
+   * Every book carries `rank`: the record's position in the catalog's
+   * results (the catalog sorts by relevance).
+   */
+  async *searchBookPages(
+    query: string,
+    field: SearchField = "any"
+  ): AsyncGenerator<RawBook[]> {
     const params = new URLSearchParams({
       KatID: "0",
       typ: "repl",
@@ -212,7 +261,7 @@ export class LibraryCatalog {
     const cookies = new Map<string, string>();
     const seenUrls = new Set<string>();
     const seenRecords = new Set<string>();
-    const books: RawBook[] = [];
+    let rank = 0;
     let url: string | null = `${this.baseUrl}?${params}`;
 
     for (let page = 1; url && page <= config.catalogMaxPages; page++) {
@@ -226,7 +275,7 @@ export class LibraryCatalog {
         // Later pages are a bonus: keep what we already have.
         if (page > 1) {
           console.warn(`[library] Page ${page} failed, stopping:`, error);
-          break;
+          return;
         }
         throw error;
       }
@@ -236,8 +285,21 @@ export class LibraryCatalog {
         (book) => !book.record_url || !seenRecords.has(book.record_url)
       );
       // A page with only records we already have means the paging looped.
-      if (page > 1 && parsed.books.length > 0 && fresh.length === 0) break;
-      for (const book of fresh) books.push(book);
+      if (page > 1 && parsed.books.length > 0 && fresh.length === 0) return;
+
+      // Rows of one record are consecutive and share its rank.
+      let previous: RawBook | null = null;
+      for (const book of fresh) {
+        const sameRecord =
+          previous &&
+          previous.title === book.title &&
+          previous.author === book.author &&
+          previous.record_url === book.record_url;
+        if (previous && !sameRecord) rank++;
+        book.rank = rank;
+        previous = book;
+      }
+      if (previous) rank++;
       for (const book of parsed.books) {
         if (book.record_url) seenRecords.add(book.record_url);
       }
@@ -246,10 +308,8 @@ export class LibraryCatalog {
       console.info(
         `[library] Page ${page}: ${parsed.books.length} entries${url ? "" : " (last)"}`
       );
+      yield fresh;
     }
-
-    console.info(`[library] Found ${books.length} book entries`);
-    return books;
   }
 
   /** GET one catalog page, sending and collecting cookies. */
@@ -292,6 +352,7 @@ export class LibraryCatalog {
     }
 
     const books: RawBook[] = [];
+    const missingIds: ReturnType<typeof $>[] = [];
 
     container.find("div.record-details").each((_, recordElement) => {
       const record = $(recordElement);
@@ -299,7 +360,7 @@ export class LibraryCatalog {
       if (desc.length === 0) return;
 
       const recordId = findRecordId($, record);
-      const record_url = recordId ? this.recordUrl(recordId) : null;
+      if (!recordId) missingIds.push(record);
 
       // Title: prefer the dedicated element, fall back to h3 / any *title* class.
       let titleSource = desc.find("span.desc-o-mb-title").first();
@@ -341,9 +402,23 @@ export class LibraryCatalog {
 
           if (!title || !author) return; // skip records with missing title/author
 
-          books.push({ title, author, branch_number, available, record_url });
+          books.push({
+            title,
+            author,
+            branch_number,
+            available,
+            record_url: recordId ? this.recordUrl(recordId) : this.titleSearchUrl(title),
+          });
         });
     });
+
+    if (missingIds.length > 0) {
+      // Linked to a title search instead; log one so the layout can be fixed.
+      console.warn(
+        `[library] ${missingIds.length} record(s) without a record id on ${pageUrl}; ` +
+          `first one: ${$.html(missingIds[0].parent()).replace(/\s+/g, " ").slice(0, 600)}`
+      );
+    }
 
     return { books, nextUrl };
   }
@@ -356,19 +431,57 @@ export class LibraryCatalog {
     query: string,
     field: SearchField = "any"
   ): Promise<{ books: RawBook[]; demo: boolean }> {
-    const demo = () => ({
-      books: demoSearchBooks(query, [...this.libraryCoordinates.keys()], this.baseUrl, field),
-      demo: true,
-    });
-    if (config.demoMode === "on") return demo();
+    const books: RawBook[] = [];
+    let demo = false;
+    for await (const page of this.searchPages(query, field)) {
+      books.push(...page.books);
+      demo = page.demo;
+    }
+    return { books, demo };
+  }
+
+  /**
+   * search() page by page. The demo fallback applies only when the first
+   * page fails; a later failure just ends the results.
+   */
+  async *searchPages(
+    query: string,
+    field: SearchField = "any"
+  ): AsyncGenerator<{ books: RawBook[]; demo: boolean }> {
+    const demo = () =>
+      demoSearchPages(query, [...this.libraryCoordinates.keys()], this.baseUrl, field);
+
+    if (config.demoMode === "on") {
+      yield* demo();
+      return;
+    }
+    let first = true;
     try {
-      return { books: await this.searchBooks(query, field), demo: false };
+      for await (const books of this.searchBookPages(query, field)) {
+        first = false;
+        yield { books, demo: false };
+      }
     } catch (error) {
-      if (config.demoMode === "off") throw error;
+      if (config.demoMode === "off" || !first) throw error;
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[library] Live catalog failed (${message}); using demo data`);
-      return demo();
+      yield* demo();
     }
+  }
+
+  /** Adds the distance from userLocation and the branch coordinates. */
+  withDistances(books: RawBook[], userLocation: Coordinates): Book[] {
+    return books.map((book) => {
+      const coords = this.libraryCoordinates.get(book.branch_number);
+      return {
+        ...book,
+        distance_km: coords
+          ? DistanceCalculator.haversine(userLocation, coords)
+          : Number.POSITIVE_INFINITY,
+        branch_lat: coords?.lat ?? null,
+        branch_lon: coords?.lon ?? null,
+      };
+    });
   }
 
   /** Fetches books and returns them sorted by distance from userLocation. */
@@ -378,29 +491,9 @@ export class LibraryCatalog {
     field: SearchField = "any"
   ): Promise<{ books: Book[]; demo: boolean }> {
     const { books, demo } = await this.search(query, field);
-
-    // Precompute branch distances once (cheap: ~57 branches).
-    const branchDistances = new Map<number, number>();
-    for (const [branchNumber, coords] of this.libraryCoordinates) {
-      branchDistances.set(
-        branchNumber,
-        DistanceCalculator.haversine(userLocation, coords)
-      );
-    }
-
-    const withDistances = books
-      .map((book) => {
-        const coords = this.libraryCoordinates.get(book.branch_number);
-        return {
-          ...book,
-          distance_km:
-            branchDistances.get(book.branch_number) ??
-            Number.POSITIVE_INFINITY,
-          branch_lat: coords?.lat ?? null,
-          branch_lon: coords?.lon ?? null,
-        };
-      })
-      .sort((a, b) => a.distance_km - b.distance_km);
+    const withDistances = this.withDistances(books, userLocation).sort(
+      (a, b) => a.distance_km - b.distance_km
+    );
     return { books: withDistances, demo };
   }
 }

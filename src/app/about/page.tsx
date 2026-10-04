@@ -1,18 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ArrowLeft, Cloud, Layers, MapPinned, Search } from "lucide-react";
+import { ArrowLeft, Layers, MapPinned, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export const metadata: Metadata = {
-  title: "O projekcie — Książki w Krakowie",
+  title: "O projekcie — Książka w Twojej Okolicy",
 };
 
 const STEPS = [
@@ -66,41 +60,6 @@ export default function AboutPage() {
           </li>
         ))}
       </ol>
-
-      <div className="mt-6 grid gap-4 sm:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Technologia</CardTitle>
-            <CardDescription>Z czego jest zbudowany projekt</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
-              <li>Next.js 16 (App Router) i React 19</li>
-              <li>Tailwind CSS v4 i shadcn/ui (Base UI, ikony Lucide)</li>
-              <li>TypeScript</li>
-              <li>Geokodowanie adresów przez LocationIQ</li>
-            </ul>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Cloud className="size-4 text-primary" />
-              Serverless na Vercelu
-            </CardTitle>
-            <CardDescription>Jak działa backend</CardDescription>
-          </CardHeader>
-          <CardContent className="text-muted-foreground">
-            Każdy plik <code className="font-mono text-foreground">route.ts</code>{" "}
-            to osobna funkcja serverless. API wyszukiwarki:{" "}
-            <code className="font-mono text-foreground">/api/books</code>,{" "}
-            <code className="font-mono text-foreground">/api/available</code>,{" "}
-            <code className="font-mono text-foreground">/api/closest</code>,{" "}
-            <code className="font-mono text-foreground">/api/geocode</code>.
-          </CardContent>
-        </Card>
-      </div>
 
       <div className="mt-10">
         <Link className={buttonVariants({ variant: "outline" })} href="/">

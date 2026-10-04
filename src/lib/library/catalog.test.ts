@@ -110,3 +110,72 @@ describe("LibraryCatalog.searchBooks field", () => {
     expect(new URL(calls[0].url).searchParams.get("plnk")).toBe(plnk);
   });
 });
+
+describe("LibraryCatalog.searchBookPages", () => {
+  it("yields each page as it arrives, ranked in catalog order", async () => {
+    mockCatalog({
+      first: page([record("KrB1", "Diuna", 2), record("KrB2", "Diuna : powieść", 21)], "?a=P2"),
+      P2: page([record("KrB3", "Mesjasz Diuny", 24)]),
+    });
+    const pages: { title: string; rank?: number }[][] = [];
+    for await (const books of catalog().searchBookPages("diuna")) {
+      pages.push(books.map(({ title, rank }) => ({ title, rank })));
+    }
+    expect(pages).toEqual([
+      [
+        { title: "Diuna", rank: 0 },
+        { title: "Diuna : powieść", rank: 1 },
+      ],
+      [{ title: "Mesjasz Diuny", rank: 2 }],
+    ]);
+  });
+});
+
+
+describe("LibraryCatalog record links", () => {
+  const details = (title: string, branch = 2) => `
+    <div class="record-details">
+      <div class="record-meta">
+        <span class="desc-o-mb-title">${title}</span>
+        <div class="desc-descr-block-author"><div class="desc-descr-items">Prus, Bolesław</div></div>
+      </div>
+      <div class="record-availability-details">
+        <div class="record-av-details-row">
+          <div class="record-av-details-agenda">Filia nr ${branch}</div>
+          <button class="record-av-agenda-button">x</button>
+        </div>
+      </div>
+    </div>`;
+  const parse = (body: string) =>
+    catalog().parseResultsPage(
+      `<html><body><div class="found-records">${body}</div></body></html>`,
+      `${BASE}?KatID=0`
+    ).books;
+
+  it("finds the link several levels above the record", () => {
+    const [book] = parse(`
+      <div class="hit"><a href="?KatID=0&amp;typ=record&amp;001=KrB111">Lalka</a>
+        <div class="a"><div class="b"><div class="c">${details("Lalka")}</div></div></div>
+      </div>`);
+    expect(book.record_url).toBe(`${BASE}?KatID=0&typ=record&001=KrB111`);
+  });
+
+  it("reads URL-encoded and attribute-only ids", () => {
+    const books = parse(`
+      <div class="hit"><a href="index.php?go=x%26001%3DKrB22200">Lalka</a>${details("Lalka")}</div>
+      <div class="hit" data-record="KrB33300">${details("Faraon")}</div>`);
+    expect(books.map((b) => b.record_url)).toEqual([
+      `${BASE}?KatID=0&typ=record&001=KrB22200`,
+      `${BASE}?KatID=0&typ=record&001=KrB33300`,
+    ]);
+  });
+
+  it("never borrows the neighbouring record's link", () => {
+    const books = parse(`
+      <div class="hit"><a href="?typ=record&amp;001=KrB444">Lalka</a>${details("Lalka")}</div>
+      <div class="hit">${details("Faraon : powieść / Bolesław Prus")}</div>`);
+    expect(books[0].record_url).toContain("001=KrB444");
+    // No id: falls back to a title search instead of no link at all.
+    expect(new URL(books[1].record_url!).searchParams.get("plnk")).toBe("__tytul_Faraon");
+  });
+});

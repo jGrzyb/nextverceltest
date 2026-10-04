@@ -1,6 +1,7 @@
 /**
  * Library Book Finder — public API (TypeScript port of book_scrapper_clean.py).
  *
+ *   streamBooks(query, lat, lon)    -> the same, one catalog page at a time
  *   findBooks(query, lat, lon)      -> all books sorted by distance
  *                                      (options.field: "any" | "title" | "author")
  *   findAvailable(query, lat, lon)  -> only currently available books
@@ -45,6 +46,22 @@ export async function findBooks(
     field
   );
   return { data: books, demo };
+}
+
+/**
+ * findBooks() one catalog results page at a time, so callers can show the
+ * first page while the rest loads. Books keep the catalog order (`rank`).
+ */
+export async function* streamBooks(
+  query: string,
+  lat: number,
+  lon: number,
+  { field = "any", catalog = getCatalog() }: FindOptions = {}
+): AsyncGenerator<SearchResult<Book[]>> {
+  const origin = new Coordinates(lat, lon);
+  for await (const page of catalog.searchPages(query, field)) {
+    yield { data: catalog.withDistances(page.books, origin), demo: page.demo };
+  }
 }
 
 /** Same as findBooks, but only books currently available. */

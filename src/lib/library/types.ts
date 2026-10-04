@@ -11,6 +11,11 @@ export interface RawBook {
   available: boolean;
   /** Link to this record (edition) in the library catalog, when found. */
   record_url: string | null;
+  /**
+   * Position of the record in the catalog's results (0 = most relevant).
+   * All branch rows of one record share it.
+   */
+  rank?: number;
 }
 
 /** A book with the distance from the user's location appended. */

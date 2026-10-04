@@ -18,7 +18,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Książki w Krakowie",
+  title: "Książka w Twojej Okolicy",
   description:
     "Sprawdź, w której filii Biblioteki Kraków najbliżej Ciebie jest dostępna książka.",
 };
@@ -38,12 +38,12 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           <nav className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between px-4 sm:px-6">
             <Link
               href="/"
-              className="flex items-center gap-2 text-base font-semibold tracking-tight whitespace-nowrap"
+              className="flex items-center gap-2 text-sm font-semibold tracking-tight whitespace-nowrap sm:text-base"
             >
               <span className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
                 <LibraryBig className="size-4" />
               </span>
-              Książki w Krakowie
+              Książka w Twojej Okolicy
             </Link>
             <div className="flex items-center gap-1">
               <Link

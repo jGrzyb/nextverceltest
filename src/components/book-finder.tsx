@@ -48,6 +48,7 @@ import {
   cleanAuthor,
   cleanTitle,
   directionsUrl,
+  subtitleOf,
   matchKey,
   formatDistance,
   plural,
@@ -60,7 +61,7 @@ import { cn } from "@/lib/utils";
 
 type LocationMode = "device" | "address" | "coords";
 type AvailabilityFilter = "all" | "available" | "open";
-type SortBy = "distance" | "availability" | "title";
+type SortBy = "relevance" | "distance" | "availability" | "title";
 
 interface Point {
   lat: number;
@@ -81,6 +82,10 @@ interface BookGroup {
   author: string;
   rawTitle: string;
   rawAuthor: string;
+  /** Subtitle shared by every edition ("dla nastolatek"), else null. */
+  subtitle: string | null;
+  /** Best catalog position among its editions (lower = more relevant). */
+  rank: number;
   /** One entry per branch (editions merged), nearest first. */
   copies: Book[];
   /** How many catalog records (editions) were merged into this group. */
@@ -168,6 +173,25 @@ function rememberSearch(query: string) {
 
 // --- Helpers ---------------------------------------------------------------
 
+/** Parses an NDJSON response body line by line as it streams in. */
+async function* readLines(
+  body: ReadableStream<Uint8Array>
+): AsyncGenerator<{ type: string; [key: string]: unknown }> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const lines = buffer.split("\n");
+    buffer = done ? "" : lines.pop()!;
+    for (const line of lines) {
+      if (line.trim()) yield JSON.parse(line);
+    }
+    if (done) return;
+  }
+}
+
 function getPosition(): Promise<GeolocationPosition> {
   return new Promise((resolve, reject) => {
     if (!("geolocation" in navigator)) {
@@ -199,6 +223,7 @@ function groupBooks(books: Book[]): BookGroup[] {
   const groups = new Map<string, BookGroup>();
   const branches = new Map<string, Map<number, Book>>();
   const editions = new Map<string, Set<string>>();
+  const subtitles = new Map<string, Set<string>>();
 
   for (const book of books) {
     const title = cleanTitle(book.title);
@@ -213,6 +238,8 @@ function groupBooks(books: Book[]): BookGroup[] {
         author,
         rawTitle: book.title,
         rawAuthor: book.author,
+        subtitle: null,
+        rank: book.rank ?? Number.POSITIVE_INFINITY,
         copies: [],
         editions: 0,
         availableCount: 0,
@@ -221,8 +248,11 @@ function groupBooks(books: Book[]): BookGroup[] {
       groups.set(key, group);
       branches.set(key, new Map());
       editions.set(key, new Set());
+      subtitles.set(key, new Set());
     }
     editions.get(key)!.add(`${book.title}|${book.author}`);
+    subtitles.get(key)!.add(subtitleOf(book.title));
+    group.rank = Math.min(group.rank, book.rank ?? Number.POSITIVE_INFINITY);
 
     const byBranch = branches.get(key)!;
     const existing = byBranch.get(book.branch_number);
@@ -237,11 +267,25 @@ function groupBooks(books: Book[]): BookGroup[] {
   for (const group of groups.values()) {
     group.copies = [...branches.get(group.key)!.values()];
     group.editions = editions.get(group.key)!.size;
+    const subs = subtitles.get(group.key)!;
+    group.subtitle = subs.size === 1 ? [...subs][0] || null : null;
     group.copies.sort((a, b) => distanceOf(a) - distanceOf(b));
     group.availableCount = group.copies.filter((c) => c.available).length;
     group.nearestAvailable = group.copies.find((c) => c.available) ?? null;
   }
   return [...groups.values()];
+}
+
+/**
+ * How well a title answers the query: 0 = the exact title, 1 = the exact
+ * title with a subtitle ("… : dla nastolatek"), 2 = starts with the query,
+ * 3 = anything else. Ties keep the catalog's own relevance order.
+ */
+function titleMatch(group: BookGroup, query: string): number {
+  const wanted = matchKey(query);
+  const main = matchKey(group.title);
+  if (main === wanted) return group.subtitle ? 1 : 0;
+  return main.startsWith(wanted) ? 2 : 3;
 }
 
 /** The API serializes unknown distances (Infinity) as null. */
@@ -315,7 +359,11 @@ export default function BookFinder() {
 
   // View state
   const [availability, setAvailability] = useState<AvailabilityFilter>("all");
-  const [sortBy, setSortBy] = useState<SortBy>("distance");
+  const [sortBy, setSortBy] = useState<SortBy>("relevance");
+  // Later catalog pages still arriving after the first one is shown.
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [partial, setPartial] = useState(false);
+  const searchAbort = useRef<AbortController | null>(null);
   const [showMap, setShowMap] = useState(true);
   const [mapFocus, setMapFocus] = useState<{ branch: number } | null>(null);
   const mapRef = useRef<HTMLDivElement>(null);
@@ -429,34 +477,67 @@ export default function BookFinder() {
     }
     if (override !== undefined) setQuery(override);
 
+    // A new search cancels the pages still loading for the previous one.
+    searchAbort.current?.abort();
+    const abort = new AbortController();
+    searchAbort.current = abort;
+
     setLoading(true);
+    setLoadingMore(false);
+    setPartial(false);
+    let shown = false;
     try {
       const location = await resolveLocation();
       const response = await fetch(
-        `/api/books?q=${encodeURIComponent(q)}&lat=${location.lat}&lon=${location.lon}&field=${field}`
+        `/api/books?q=${encodeURIComponent(q)}&lat=${location.lat}&lon=${location.lon}&field=${field}&stream=1`,
+        { signal: abort.signal }
       );
-      const data = await response.json().catch(() => null);
-      if (!response.ok) {
+      if (!response.ok || !response.body) {
+        const data = await response.json().catch(() => null);
         throw new Error(
           response.status === 502
             ? "Katalog biblioteki nie odpowiada. Spróbuj ponownie za chwilę."
             : (data?.error ?? `Wyszukiwanie nie powiodło się (HTTP ${response.status}).`)
         );
       }
-      setResults(data.results);
-      setDemo(Boolean(data.demo));
-      setSearchedQuery(q);
-      setSearchedField(field);
-      setMapFocus(null);
-      setResolvedLocation(location);
-      rememberSearch(q);
-      requestAnimationFrame(() =>
-        resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-      );
+
+      // NDJSON: one line per catalog page. The first page replaces the old
+      // results right away; later pages are appended as they arrive.
+      for await (const message of readLines(response.body)) {
+        if (abort.signal.aborted) return;
+        if (message.type === "page") {
+          const page = message.results as Book[];
+          if (!shown) {
+            shown = true;
+            setResults(page);
+            setDemo(Boolean(message.demo));
+            setSearchedQuery(q);
+            setSearchedField(field);
+            setResolvedLocation(location);
+            setMapFocus(null);
+            setLoading(false);
+            setLoadingMore(true);
+            rememberSearch(q);
+            requestAnimationFrame(() =>
+              resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+            );
+          } else {
+            setResults((previous) => [...(previous ?? []), ...page]);
+          }
+        } else if (message.type === "error") {
+          if (!shown) throw new Error(String(message.error));
+          setPartial(true);
+        }
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (abort.signal.aborted) return;
+      if (shown) setPartial(true);
+      else setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (searchAbort.current === abort) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   }
 
@@ -475,6 +556,14 @@ export default function BookFinder() {
       g.nearestAvailable ? distanceOf(g.nearestAvailable) : Number.POSITIVE_INFINITY;
     const sorted = [...list];
     switch (sortBy) {
+      case "relevance":
+        sorted.sort(
+          (a, b) =>
+            titleMatch(a, searchedQuery) - titleMatch(b, searchedQuery) ||
+            a.rank - b.rank ||
+            nearest(a) - nearest(b)
+        );
+        break;
       case "title":
         sorted.sort((a, b) => a.title.localeCompare(b.title, "pl"));
         break;
@@ -491,7 +580,7 @@ export default function BookFinder() {
         );
     }
     return sorted;
-  }, [groups, availability, sortBy, now]);
+  }, [groups, availability, sortBy, now, searchedQuery]);
 
   const closest = useMemo(() => {
     let best: { group: BookGroup; copy: Book } | null = null;
@@ -845,6 +934,17 @@ export default function BookFinder() {
                       : "wszystko wypożyczone"}
                     {resolvedLocation && <> · blisko: {resolvedLocation.label}</>}
                   </p>
+                  {loadingMore && (
+                    <p className="mt-1 inline-flex items-center gap-1.5 text-xs font-medium text-primary animate-fade-up">
+                      <Loader2 className="size-3.5 animate-spin" />
+                      Wczytuję kolejne strony katalogu…
+                    </p>
+                  )}
+                  {partial && !loadingMore && (
+                    <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                      Nie udało się wczytać wszystkich stron katalogu, więc część wyników może brakować.
+                    </p>
+                  )}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <div className="inline-flex gap-0.5 rounded-lg border bg-background p-0.5">
@@ -948,6 +1048,11 @@ export default function BookFinder() {
                       />
                     </li>
                   ))}
+                  {loadingMore && (
+                    <li aria-hidden>
+                      <BookCardSkeleton />
+                    </li>
+                  )}
                 </ul>
               )}
             </div>
@@ -959,6 +1064,7 @@ export default function BookFinder() {
 }
 
 const SORT_LABELS: Record<SortBy, string> = {
+  relevance: "Trafność",
   distance: "Najbliżej",
   availability: "Najwięcej dostępnych",
   title: "Tytuł A–Z",
@@ -1088,6 +1194,9 @@ function ClosestCard({
         <div className="min-w-0">
           <p className="text-xl font-semibold text-balance sm:text-2xl" title={group.rawTitle}>
             {group.title}
+            {group.subtitle && (
+              <span className="font-normal opacity-80"> : {group.subtitle}</span>
+            )}
           </p>
           <p className="mt-0.5 text-sm opacity-80" title={group.rawAuthor}>
             {group.author}
@@ -1208,6 +1317,9 @@ function BookCard({
           <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
             <h3 className="font-semibold leading-snug" title={group.rawTitle}>
               {group.title}
+              {group.subtitle && (
+                <span className="font-normal text-muted-foreground"> : {group.subtitle}</span>
+              )}
             </h3>
             <AvailabilityBadge group={group} />
           </div>
@@ -1396,6 +1508,20 @@ function EmptyState({
         {action && <div className="mt-4">{action}</div>}
       </CardContent>
     </Card>
+  );
+}
+
+function BookCardSkeleton() {
+  return (
+    <div className="rounded-xl border border-dashed bg-card/60 p-4">
+      <div className="flex gap-4">
+        <div className="hidden h-16 w-12 animate-pulse rounded-md bg-muted sm:block" />
+        <div className="flex-1 space-y-2">
+          <div className="h-4 w-1/2 animate-pulse rounded bg-muted" />
+          <div className="h-3 w-1/4 animate-pulse rounded bg-muted" />
+        </div>
+      </div>
+    </div>
   );
 }
 

@@ -34,6 +34,9 @@ const DEMO_BOOKS: { title: string; author: string; tags?: string }[] = [
   { title: "Rok 1984 / George Orwell", author: "Orwell, George (1903-1950)." },
   { title: "Mały Książę / Antoine de Saint-Exupéry", author: "Saint-Exupéry, Antoine de (1900-1944)." },
   { title: "Zbrodnia i kara / Fiodor Dostojewski", author: "Dostojewski, Fiodor (1821-1881)." },
+  // A subtitled spin-off listed before the original, to exercise relevance sorting.
+  { title: "Jak zdobyć przyjaciół i zjednać sobie ludzi : dla nastolatek / Donna Dale Carnegie", author: "Carnegie, Donna Dale." },
+  { title: "Jak zdobyć przyjaciół i zjednać sobie ludzi / Dale Carnegie", author: "Carnegie, Dale (1888-1955)." },
 ];
 
 /** Known Kraków places for geocoding without an API key. */
@@ -103,7 +106,7 @@ export function demoSearchBooks(
     return words.every((word) => haystack.includes(word));
   });
 
-  return matches.flatMap((book) => {
+  return matches.flatMap((book, rank) => {
     const random = seededRandom(book.title);
     const copies = 2 + Math.floor(random() * 9); // 2–10 branches
     const pool = [...branchNumbers];
@@ -127,8 +130,38 @@ export function demoSearchBooks(
       branch_number,
       available: random() < 0.45,
       record_url,
+      rank,
     }));
   });
+}
+
+/** Records per demo "page", so the demo also shows results arriving in steps. */
+const DEMO_PAGE_SIZE = 3;
+
+/**
+ * demoSearchBooks() split into pages with the catalog's page delay, the way
+ * the live catalog delivers a long result list.
+ */
+export async function* demoSearchPages(
+  query: string,
+  branchNumbers: number[],
+  catalogBaseUrl: string,
+  field: SearchField = "any",
+  pageDelayMs = 700
+): AsyncGenerator<{ books: RawBook[]; demo: true }> {
+  const books = demoSearchBooks(query, branchNumbers, catalogBaseUrl, field);
+  const lastRank = books.at(-1)?.rank ?? -1;
+  if (books.length === 0) {
+    yield { books: [], demo: true };
+    return;
+  }
+  for (let from = 0; from <= lastRank; from += DEMO_PAGE_SIZE) {
+    if (from > 0) await new Promise((resolve) => setTimeout(resolve, pageDelayMs));
+    yield {
+      books: books.filter((b) => b.rank! >= from && b.rank! < from + DEMO_PAGE_SIZE),
+      demo: true,
+    };
+  }
 }
 
 /** Geocodes against a few known Kraków places; unknown -> null. */
